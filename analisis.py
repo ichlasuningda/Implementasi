@@ -1,5 +1,8 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import expr, col, to_date, year, month, weekofyear, dayofmonth
+from pyspark.sql.functions import expr, col, to_date, year, month, weekofyear, dayofmonth, max, count, sum, datediff, lit, avg
+from pyspark.ml.feature import StandardScaler, VectorAssembler
+from pyspark.ml.clustering import KMeans
+import matplotlib.pyplot as plt
 import pandas as pd
 
 #=== Inisialisasi SparkSession ===
@@ -240,3 +243,73 @@ query_7 = spark.sql("""
                         Total_Sales DESC
                     """)
 query_7.show()
+
+
+#=== Analisis Segmentasi Pelanggan Menggunakan RFM ===
+# 1. Hitung Nilai RFM
+# Recency: Hari terakhir transaksi pelanggan dibandingkan dengan tanggal acuan
+ref_date = df_trans.select(max("Order_Date")).first()[0]
+
+rfm_df = fact_trans.alias("ft").join(
+    df_trans.select("Customer_ID", "Order_Date", "Sales").alias("dt"),
+    col("ft.Customer_ID") == col("dt.Customer_ID")
+).groupBy("ft.Customer_ID") \
+    .agg(
+        datediff(lit(ref_date), max(col("dt.Order_Date"))).alias("Recency"),
+        count("ft.Customer_ID").alias("Frequency"),
+        sum("ft.Sales").alias("Monetary")
+    )
+
+# 2. Normalisasi Data Skoring
+assembler = VectorAssembler(inputCols=["Recency", "Frequency", "Monetary"], outputCol="features")
+rfm_features = assembler.transform(rfm_df)
+
+scaler = StandardScaler(inputCol="features", outputCol="scaled_features", withMean=True, withStd=True)
+scaler_model = scaler.fit(rfm_features)
+rfm_scaled = scaler_model.transform(rfm_features)
+
+# 3. Clustering dengan KMeans
+kmeans = KMeans(featuresCol="scaled_features", k=4, seed=1)
+kmeans_model = kmeans.fit(rfm_scaled)
+rfm_clusters = kmeans_model.transform(rfm_scaled)
+
+rfm_result = rfm_clusters.select("Customer_ID", "Recency", "Frequency", "Monetary", "prediction")
+rfm_result = rfm_result.withColumnRenamed("prediction", "Segment")
+print("Hasil Clustering")
+rfm_result.show(10)
+
+# 4. Analisis Karakteristik Segmen
+segment_summary = rfm_result.groupBy("Segment") \
+    .agg(
+        avg("Recency").alias("Avg_Recency"),
+        avg("Frequency").alias("Avg_Frequency"),
+        avg("Monetary").alias("Avg_Monetary"),
+        count("Customer_ID").alias("Customer_Count")
+    ) \
+    .orderBy("Segment")
+segment_summary.show()
+
+# 5. Rekomendasi Strategi Pemasaran
+segment_summary_pd = segment_summary.toPandas()
+
+for _, row in segment_summary_pd.iterrows():
+    print(f"Segment {row['Segment']}:")
+    print(f"- Rata-rata Recency: {row['Avg_Recency']:.2f} hari")
+    print(f"- Rata-rata Frequency: {row['Avg_Frequency']:.2f} transaksi")
+    print(f"- Rata-rata Monetary: Rp{row['Avg_Monetary']:.2f}")
+    print(f"- Jumlah Pelanggan: {row['Customer_Count']}")
+    if row['Avg_Recency'] < 100 and row['Avg_Frequency'] > 50:
+        print("Strategi: Fokus pada program loyalitas dan penawaran eksklusif.")
+    elif row['Avg_Recency'] < 200 and row['Avg_Frequency'] <= 50:
+        print("Strategi: Dorong pelanggan untuk berbelanja lebih sering dengan diskon berkala.")
+    elif row['Avg_Recency'] >= 300:
+        print("Strategi: Lakukan reaktivasi dengan promosi besar atau personalisasi.")
+    print()
+
+# 6. Visualisasi Jumlah Pelanggan per Segmen
+plt.figure(figsize=(10, 6))
+plt.bar(segment_summary_pd['Segment'], segment_summary_pd['Customer_Count'], color='skyblue')
+plt.title("Customer Segmentation using RFM Clustering", fontsize=14)
+plt.xlabel("Segmen", fontsize=12)
+plt.ylabel("Jumlah Pelanggan", fontsize=12)
+plt.show()
