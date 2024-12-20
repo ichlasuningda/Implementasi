@@ -69,96 +69,174 @@ save_to_mysql(fact_trans, "Fact_Trans")
 print("Semua data berhasil diproses dan disimpan.")
 
 #Cek Data di MySQL
-def chect_data(data, table_name):
+def check_data(data, table_name):
     data = spark.read.jdbc(url = mysql_url, table = table_name, properties = conn_prop)
+    print("Nama Tabel: ", table_name)
     data.show(5)
+    data.printSchema()
     
 print("Cek Data di MySQL:")
-chect_data(cust_dim, "Cust_Dim")
-chect_data(product_dim, "Product_Dim")
-chect_data(loc_dim, "Loc_Dim")
-chect_data(time_dim, "Time_Dim")
-chect_data(fact_trans, "Fact_Trans")
+check_data(cust_dim, "Cust_Dim")
+check_data(product_dim, "Product_Dim")
+check_data(loc_dim, "Loc_Dim")
+check_data(time_dim, "Time_Dim")
+check_data(fact_trans, "Fact_Trans")
 
-# === Eksplorasi Data ===
-data_pd = df_trans.toPandas()
-print("Informasi Mengenai Dataset:")
-print(data_pd.info())
+
+#=== Eksplorasi Tabel Fakta ===
+data_eks = fact_trans.toPandas()
+print("Informasi Mengenai Dataset Pada Tabel Fakta:")
+print(data_eks.info())
 print("Statistik Deskriptif (Numerik):")
-print(data_pd.describe())
+print(data_eks.describe())
 print("Statistik Deskriptif Kategorikal:")
-print(data_pd.describe(include=['object']))
+print(data_eks.describe(include=['object']))
 
 #Cek Missing Value
-miss_val = data_pd.isnull().sum()
-miss_perc = (miss_val/len(data_pd)) * 100
+miss_val = data_eks.isnull().sum()
+miss_perc = (miss_val/len(data_eks)) * 100
 print(pd.DataFrame({'Missing Values': miss_val, 'Percentage': miss_perc}))
 
 
 # === Analisis Data Menggunakan Query SQL ===
-df_trans.createOrReplaceTempView("df_trans")
+cust_dim.createOrReplaceTempView("cust_dim")
+product_dim.createOrReplaceTempView("product_dim")
+loc_dim.createOrReplaceTempView("loc_dim")
+time_dim.createOrReplaceTempView("time_dim")
+fact_trans.createOrReplaceTempView("fact_trans")
 print()
 print("====================ANALISIS DATA MENGGUNAKAN QUERY SQL====================")
 
 # 1. Produk terlaris berdasarkan kategori/sub-kategori
 print("Produk Terlaris Berdasarkan Kategori")
 query_1 = spark.sql("""
-                    SELECT Category, Product_Name, SUM(Sales) AS Total_Sales
-                    FROM df_trans 
-                    GROUP BY Category, Product_Name 
-                    ORDER BY Total_Sales DESC 
-                    LIMIT 10""")
+                    SELECT 
+                        pd.Category,
+                        pd.Product_Name,
+                        SUM(ft.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans ft
+                    JOIN 
+                        product_dim pd
+                    ON 
+                        ft.Product_ID = pd.Product_ID
+                    GROUP BY 
+                        pd.Category, pd.Product_Name
+                    ORDER BY 
+                        pd.Category ASC, Total_Sales DESC
+                    """)
 query_1.show()
+
 print("Produk Terlaris Berdasarkan Sub-Kategori")
 query_2 = spark.sql("""
-                    SELECT `Sub-Category`, Product_Name, SUM(Sales) AS Total_Sales
-                    FROM df_trans 
-                    GROUP BY `Sub-Category`, Product_Name 
-                    ORDER BY Total_Sales DESC 
-                    LIMIT 10""")
+                    SELECT 
+                        pd.`Sub-Category`,
+                        pd.Product_Name,
+                        SUM(ft.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans ft
+                    JOIN 
+                        product_dim pd
+                    ON 
+                        ft.Product_ID = pd.Product_ID
+                    GROUP BY 
+                        pd.`Sub-Category`, pd.Product_Name
+                    ORDER BY 
+                        pd.`Sub-Category` ASC, Total_Sales DESC
+                    """)
 query_2.show()
 
-# 2. Segmentasi pelanggan berdasarkan lokasi geografis dan total belanja
+# 2. Segmetasi pelanggan berdasarkan lokasi dan total belanja
+print("Segmentasi Pelanggan Berdasarkan Lokasi Geografis dan Total Belanja")
 query_3 = spark.sql("""
-                    SELECT Country, City, State, Region, SUM(Sales) AS Total_Sales
-                    FROM df_trans
-                    GROUP BY Country, City, State, Region
-                    ORDER BY Total_Sales DESC
-                    LIMIT 10
+                    SELECT 
+                        l.Country,
+                        l.Region,
+                        l.State,
+                        l.City,
+                        c.Segment,
+                        SUM(f.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans f
+                    JOIN 
+                        cust_dim c ON f.Customer_ID = c.Customer_ID
+                    JOIN 
+                        loc_dim l ON f.Postal_Code = l.Postal_Code
+                    GROUP BY 
+                        l.Country, l.Region, l.State, l.City, c.Segment
+                    ORDER BY 
+                        Total_Sales DESC
                     """)
-print("Segmentasi Pelanggan Berdasarkan Lokasi Geografis dan Total Belanja:")
 query_3.show()
 
-# 3. Pola penjualan bulanan/kuartalan/tahunan
-#query_4 = spark.sql("""
-#            SELECT YEAR(tanggal_penjualan) AS tahun, 
-#                MONTH(tanggal_penjualan) AS bulan, 
-#                QUARTER(tanggal_penjualan) AS kuartal, 
-#                SUM(total_belanja) AS total_penjualan
-#            FROM data_retail
-#            GROUP BY tahun, bulan, kuartal
-#            ORDER BY tahun, bulan
-#            """)
-#print("Pola Penjualan Bulanan/Kuartalan/Tahunan:")
-#query_4.show()
-
-# 4. Perbandingan penjualan antar-lokasi
-query_5 = spark.sql("""
-                    SELECT Region, SUM(Sales) AS Total_Sales
-                    FROM df_trans
-                    GROUP BY Region
-                    ORDER BY Total_Sales DESC
-                    LIMIT 10
+# 3. Pola Penjualan
+print("Pola Penjualan Bulanan:")
+query_4 = spark.sql("""
+                    SELECT 
+                        t.Year,
+                        t.Month,
+                        SUM(f.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans f
+                    JOIN 
+                        time_dim t ON f.Order_Date = t.Order_Date
+                    GROUP BY 
+                        t.Year, t.Month
+                    ORDER BY 
+                        t.Year, t.Month
                     """)
-print("Perbandingan Penjualan Antar-Lokasi (Region):")
+query_4.show()
+
+print("Pola Penjualan Kuartalan:")
+query_5 = spark.sql("""
+                    SELECT 
+                        t.Year,
+                        t.Quarter,
+                        SUM(f.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans f
+                    JOIN 
+                        time_dim t ON f.Order_Date = t.Order_Date
+                    GROUP BY 
+                        t.Year, t.Quarter
+                    ORDER BY 
+                        t.Year, t.Quarter
+                    """)
 query_5.show()
 
+print("Pola Penjualan Tahunan:")
 query_6 = spark.sql("""
-                    SELECT Country, SUM(Sales) AS Total_Sales
-                    FROM df_trans
-                    GROUP BY Country
-                    ORDER BY Total_Sales DESC
-                    LIMIT 10
+                    SELECT 
+                        t.Year,
+                        SUM(f.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans f
+                    JOIN 
+                        time_dim t ON f.Order_Date = t.Order_Date
+                    GROUP BY 
+                        t.Year
+                    ORDER BY 
+                        t.Year
                     """)
-print("Perbandingan Penjualan Antar-Lokasi (Country):")
 query_6.show()
+
+# 3. Perbandingan Penjualan
+print("Perbandingan Penjualan Antar Lokasi")
+query_7 = spark.sql("""
+                    SELECT 
+                        ld.Region AS Region,
+                        ld.State AS State,
+                        ld.City AS City,
+                        SUM(ft.Sales) AS Total_Sales
+                    FROM 
+                        fact_trans ft
+                    JOIN 
+                        loc_dim ld
+                    ON 
+                        ft.Postal_Code = ld.Postal_Code
+                    GROUP BY 
+                        ld.Region, ld.State, ld.City
+                    ORDER BY 
+                        Total_Sales DESC
+                    """)
+query_7.show()
